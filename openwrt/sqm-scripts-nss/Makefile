@@ -7,12 +7,11 @@ PKG_RELEASE:=1
 include $(INCLUDE_DIR)/package.mk
  
 define Package/sqm-scripts-nss
-  CATEGORY:=Network
-  DEPENDS:=sqm-scripts
-	PKGARCH:=all
-  SECTION:=network
   TITLE:=SQM scripts for NSS enabled builds
-  URL:=https://github.com/rickkdotnet/sqm-scripts-nss
+  CATEGORY:=Network
+  DEPENDS:=+sqm-scripts
+  PKGARCH:=all
+  SECTION:=network
 endef
  
 define Package/sqm-scripts-nss/description
