@@ -1,6 +1,6 @@
 ################################################################################
 # nss-rk.qos (HW Accelerated Simple Traffic Shaper)
-# version 20230217b
+# version 20230217c
 #
 # sqm script to use the NSS accelerated nssfq_codel qdisc 
 #
@@ -121,11 +121,6 @@ ingress() {
     
     sqm_debug "Adding the ingress qdisc.."
     $TC qdisc add dev $DEV parent 1: handle 10: nssfq_codel `get_limit ${ILIMIT}` `get_flows ${IFLOWS}` `get_quantum ${IQUANTUM}` `get_target ${ITARGET} ${DOWNLINK}` ${IQDISC_OPTS} set_default
-
-    # I had a few crashes when I brought up the link immediately after
-    # not sure what the problem was but this seems to avoid it 
-    sqm_debug "Sleeping before enabling the $DEV interface... "
-    sleep 2
 
     sqm_debug "Enabling the $DEV ifb interface.." 
     $IP link set up $DEV

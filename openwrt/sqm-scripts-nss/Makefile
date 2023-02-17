@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
  
 PKG_NAME:=sqm-scripts-nss
-PKG_VERSION:=20230217b
+PKG_VERSION:=20230217c
 PKG_RELEASE:=1
  
 include $(INCLUDE_DIR)/package.mk
