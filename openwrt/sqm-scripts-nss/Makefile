@@ -2,16 +2,15 @@ include $(TOPDIR)/rules.mk
  
 PKG_NAME:=sqm-scripts-nss
 PKG_VERSION:=20230217a
-PKG_RELEASE:=1
+PKG_RELEASE:=2
  
 include $(INCLUDE_DIR)/package.mk
  
 define Package/sqm-scripts-nss
   TITLE:=SQM scripts for NSS enabled builds
-  CATEGORY:=Network
   DEPENDS:=+sqm-scripts
   PKGARCH:=all
-  SECTION:=network
+  SECTION:=base
 endef
  
 define Package/sqm-scripts-nss/description
@@ -29,9 +28,9 @@ define Build/Prepare
 	$(CP) $(CURDIR)/../../src/ $(PKG_BUILD_DIR)
 endef
 
-define Package/bridge/install
+define Package/sqm-scripts-nss/install
         $(INSTALL_DIR) $(1)
 				$(CP) $(PKG_BUILD_DIR)/src/* $(1)/
 endef
  
-$(eval $(call BuildPackage,sqm-scripts-qss))
+$(eval $(call BuildPackage,sqm-scripts-nss))
