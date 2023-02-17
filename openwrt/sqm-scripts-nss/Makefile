@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
  
 PKG_NAME:=sqm-scripts-nss
 PKG_VERSION:=20230217a
-PKG_RELEASE:=2
+PKG_RELEASE:=3
  
 include $(INCLUDE_DIR)/package.mk
  
@@ -25,12 +25,12 @@ endef
 
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) $(CURDIR)/../../src/ $(PKG_BUILD_DIR)
+	$(CP) $(CURDIR)/../../files/ $(PKG_BUILD_DIR)
 endef
 
 define Package/sqm-scripts-nss/install
         $(INSTALL_DIR) $(1)
-				$(CP) $(PKG_BUILD_DIR)/src/* $(1)/
+				$(CP) $(PKG_BUILD_DIR)/files/* $(1)/
 endef
  
 $(eval $(call BuildPackage,sqm-scripts-nss))

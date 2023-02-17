@@ -11,9 +11,9 @@ Currently only supports nssfq-codel and no traffic classification / marking due 
 * sqm-scripts package
 * luci-app-sqm package (for configuration from the GUI)
 
-## Installation
+## Manual Installation
 
-* Install the package or just copy the nss.qos and nss.qos.help files to /usr/lib/sqm on your router
+* Just copy the nss.qos and nss.qos.help files to /usr/lib/sqm on your router
 * Go to Network -> SQM QoS in luci
 * Add a a queue or change your existing one
 * Select your physical uplink interface (usually eth0)  
@@ -47,6 +47,16 @@ If it's working the output from tc should look something like this:
      maxpacket 1518 drop_overlimit 0 new_flow_count 5081 ecn_mark 0
      new_flows_len 0 old_flows_len 1
 
+## Installation via feeds
+
+If you're building OpenWRT yourselves, you can add this script to your build with a feed: 
+
+    echo "src-git sqm_scripts_nss https://github.com/rickkdotnet/sqm-scripts-nss.git >> feeds.conf
+    ./scripts/feeds update
+    ./scripts/feeds install sqm-scripts-nss
+ 
+ Now you can find the script in menuconfig under 'Extra packages'.
+
 
 ## Known bugs, limitations
 
@@ -55,5 +65,6 @@ If it's working the output from tc should look something like this:
     * Only fq-codel is supported as a queue discipline
     * No marking or traffic classification is currently possible, this also means that DSCP squashing does not work
     * ECN marking is not supported
-* The script does not remove the nssifb interface if it's stopped, because removing or even bringing down the interface frequently crashed my router. This could cause problems if you're switching to a script which set up regular ifb4ethX interfaces. You probably need to reboot if you want to do this. 
 * The script does not does anything with the Link Layer Adaptation fields. 
+* The script does not remove the nssifb interface if it's stopped, because removing or even bringing down the interface frequently crashed my router. This could cause problems if you're switching to a script which set up regular ifb4ethX interfaces. You probably need to reboot if you want to switch to another SQM script
+
