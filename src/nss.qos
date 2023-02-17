@@ -1,6 +1,6 @@
 ################################################################################
 # nss.qos (HW Accelerated Simple Traffic Shaper)
-# version 20230214a
+# version 20230217a
 #
 # sqm script to use the NSS accelerated nssfq_codel qdisc 
 #
@@ -27,6 +27,7 @@ ipt_setup() {
 
     # unfortunately, mangle doesn't work well with NSS, nor are tc filters implemented
     # so for now there's nothing to do here
+
     sqm_debug "No iptables rules added"
     return 1
 
@@ -38,7 +39,10 @@ cake_egress() {
 }
 
 egress() {
-    # egress is pretty straightforward
+    # egress is pretty straightforward, no need for ifb interface
+
+    # Codel target interval, when not set use a reasonable default
+    [ -z "$ETARGET" ] && ETARGET="5ms"
 
     # calculate burst using standard sqm function (seems to work well) 
     BURST="$(get_burst ${MTU:-1514} ${UPLINK} ${ESHAPER_BURST_DUR_US})"
@@ -79,16 +83,19 @@ cake_ingress() {
 
 ingress() {
 
+    # for ingress, we need to create an ifb interface to create a virtual bottleneck where we can shape 
+    # the standard sqm-scripts assume this interface is called ifb4<physicalinterface> but the NSS driver
+    # creates an nssifb interface. 
+
     if [[ ${IFACE} != *"eth"* ]]; then
         sqm_error "The NSSifb driver only works with ethX interfaces. Not doing anything. "
         return 1
     fi
 
-    # for ingress, we need to create an ifb interface to create a virtual bottleneck where we can shape 
-    # the standard sqm-scripts assume this interface is called ifb4<physicalinterface> but the NSS driver
-    # creates an nssifb interface. 
-
     printf ${IFACE} > /sys/module/nss_ifb/parameters/nss_dev_name
+
+    # Codel target interval, when not set use a reasonable default
+    [ -z "$ITARGET" ] && ITARGET="5ms"
 
     # calculate burst using standard sqm function (seems to work well)
     BURST="$(get_burst ${MTU:-1514} ${DOWNLINK} ${ESHAPER_BURST_DUR_US})"
