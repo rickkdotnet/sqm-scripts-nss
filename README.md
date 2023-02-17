@@ -7,19 +7,39 @@ Currently only supports nssfq-codel and no traffic classification / marking due 
 
 ## Requirements
 
-* An SQM enabled build such as https://github.com/ACwifidude/openwrt
+* An SQM enabled OpenWRT build such as https://github.com/ACwifidude/openwrt
 * sqm-scripts package
 * luci-app-sqm package (for configuration from the GUI)
 
-## Manual Installation
+## Installation
 
-* Just copy the nss.qos and nss.qos.help files to /usr/lib/sqm on your router
+### Package Installation
+
+* Download the .ipk package file here
+* Go to the System -> Software menu on your router and upload the .ipk package file
+
+### Manual Installation
+
+* Just copy the nss-rk.qos and nss-rk.qos.help files to /usr/lib/sqm on your router
+
+### Installation via feeds
+
+If you're building OpenWRT yourselves, you can add this script to your build with a feed: 
+
+    echo "src-git sqm_scripts_nss https://github.com/rickkdotnet/sqm-scripts-nss.git >> feeds.conf
+    ./scripts/feeds update
+    ./scripts/feeds install sqm-scripts-nss
+ 
+ Now you can find the script in menuconfig under 'Extra packages'.
+
+## Configuration 
+
 * Go to Network -> SQM QoS in luci
 * Add a a queue or change your existing one
 * Select your physical uplink interface (usually eth0)  
 * Sheck the 'enable this SQM instance' checkbox
 * Enter your down and upload speeds, 95% of your actual line speed is a good ballpark figure
-* Go to the queue discipline tab and select "fq_codel" as discipline and and "nss.qos" for the script
+* Go to the queue discipline tab and select "fq_codel" as discipline and and "nss-rk.qos" for the script
 * Configure other parameters if you want, although the defaults should work well. If you like to play with the codel interval, you can do by entering 'interval XXms' in the 'advanced option string'. 
 * Click "save and apply" 
 
@@ -47,15 +67,6 @@ If it's working the output from tc should look something like this:
      maxpacket 1518 drop_overlimit 0 new_flow_count 5081 ecn_mark 0
      new_flows_len 0 old_flows_len 1
 
-## Installation via feeds
-
-If you're building OpenWRT yourselves, you can add this script to your build with a feed: 
-
-    echo "src-git sqm_scripts_nss https://github.com/rickkdotnet/sqm-scripts-nss.git >> feeds.conf
-    ./scripts/feeds update
-    ./scripts/feeds install sqm-scripts-nss
- 
- Now you can find the script in menuconfig under 'Extra packages'.
 
 
 ## Known bugs, limitations

@@ -1,21 +1,22 @@
 ################################################################################
-# nss.qos (HW Accelerated Simple Traffic Shaper)
-# version 20230217a
+# nss-rk.qos (HW Accelerated Simple Traffic Shaper)
+# version 20230217b
 #
 # sqm script to use the NSS accelerated nssfq_codel qdisc 
 #
-# Based on https://github.com/ricsc/sqm-scripts/blob/master/src/nss.qos 
-# and simple.qos. 
+# Based on simple.qos and nss.qos by ricsc.
 # Modified by rickk to allow configuration via (l)uci and play nicely with
 # the standard sqm scripts without throwing all kinds of errors.
 # 
 # This script should be placed in your /usr/lib/sqm directory together with
-# nss.qos.help.
+# nss-rk.qos.help.
 # 
 # To use it, select fq_codel as a queue discipline in (l)uci and nss.qos 
 # for the script. 
 #
-# Works on my machine certified. 
+# Works on my machine (R7800 with OpenWRT 22.03.3) certified. 
+#
+# Original can be found at https://github.com/rickkdotnet/sqm-scripts-nss
 #
 ################################################################################
 
@@ -50,7 +51,7 @@ egress() {
     # a lower codel quantum is rumoured to improve priority for interactive flows 
     # at lower speed interfaces. 
     if [ ${UPLINK} -lt 100000 ]; then
-	sqm_debug "Uplink speed is below 100Mb, setting codel quantum to 300"
+    sqm_debug "Uplink speed is below 100Mb, setting codel quantum to 300"
     	EQUANTUM=300
     else
         # use the interface mtu, this seems to work well in almost all cases
@@ -60,9 +61,8 @@ egress() {
     # this allows you to set the codel interval via (l)uci eqdisc_opts
     # if no interval statement is present, set a sensible default
     if [[ "${EQDISC_OPTS}" != *"interval"* ]]; then
-        sqm_debug "No interval specified via advanced option string, going with 100ms"
-	# 100ms works well in most cases, unless the link speed is so slow that target > interval
-	# but you probably don't want/need NSS in that case anyway
+        sqm_debug "No interval specified via advanced option string, going with 100ms"     # 100ms works well in most cases, unless the link speed is so slow that target > interval
+	  # but you probably don't want/need NSS in that case anyway
         EQDISC_OPTS="interval 100ms ${EQDISC_OPTS}"
     fi
 
@@ -112,7 +112,7 @@ ingress() {
     # this allows you to set the codel interval via (l)uci iqdisc_opts
     # if no interval statement is present, set a sensible default
     if [[ "${IQDISC_OPTS}" != *"interval"* ]]; then
-	sqm_debug "No interval specified via advanced option string, going with 100ms." 
+    sqm_debug "No interval specified via advanced option string, going with 100ms." 
     	IQDISC_OPTS="interval 100ms ${IQDISC_OPTS}"
     fi
 
@@ -139,14 +139,14 @@ sqm_prepare_script() {
     # sqm-scripts standard do_modules does not insert the necessary nss_ifb module
     # load it here if it's not loaded, so we can keep all NSS changes together in this script
     if [ ! -d /sys/module/nss_ifb ]; then
-	sqm_debug "required nss_ifb kernel module not detected, loading it now.. " 
-	insmod nss-ifb 2>>${OUTPUT_TARGET} || return 1 
+      sqm_debug "required nss_ifb kernel module not detected, loading it now.. " 
+	    insmod nss-ifb 2>>${OUTPUT_TARGET} || return 1 
     fi	
     
     # the default sqm-stop script deletes the nssifb interface
     if [ ! `SILENT=1 $IP link show dev nssifb` ]; then
-        sqm_debug "nssifb interface does not exist, trying to create a new one.. "
-    	$IP link add dev nssifb type nss_ifb || return 1 
+      sqm_debug "nssifb interface does not exist, trying to create a new one.. "
+      $IP link add dev nssifb type nss_ifb || return 1 
     fi
 
     verify_iptables || return 1
@@ -171,23 +171,23 @@ sqm_start() {
 
     if [ "${UPLINK}" -ne 0 ];
     then
-	CUR_DIRECTION="egress"
-	fn_exists egress && egress || sqm_warn "sqm_start_default: ${SCRIPT} lacks an egress() function"
-        sqm_debug "sqm_start: egress shaping activated"
+      CUR_DIRECTION="egress"
+	    fn_exists egress && egress || sqm_warn "sqm_start_default: ${SCRIPT} lacks an egress() function"
+      sqm_debug "sqm_start: egress shaping activated"
     else        
-	sqm_debug "sqm_start_default: egress shaping deactivated"
-        SILENT=1 $TC qdisc del dev ${IFACE} root
+	    sqm_debug "sqm_start_default: egress shaping deactivated"
+      SILENT=1 $TC qdisc del dev ${IFACE} root
     fi
 
     if [ "${DOWNLINK}" -ne 0 ]; 
     then
-	CUR_DIRECTION="ingress"
-	fn_exists ingress && ingress || sqm_warn "sqm_start_default: ${SCRIPT} lacks an ingress() function"
-        sqm_debug "sqm_start_default: ingress shaping activated"
+      CUR_DIRECTION="ingress"
+      fn_exists ingress && ingress || sqm_warn "sqm_start_default: ${SCRIPT} lacks an ingress() function"
+      sqm_debug "sqm_start_default: ingress shaping activated"
     else
-        sqm_debug "sqm_start_default: ingress shaping deactivated"
-        SILENT=1 $TC qdisc del dev ${DEV} root
-        SILENT=1 $TC qdisc del dev ${IFACE} ingress
+      sqm_debug "sqm_start_default: ingress shaping deactivated"
+      SILENT=1 $TC qdisc del dev ${DEV} root
+      SILENT=1 $TC qdisc del dev ${IFACE} ingress
     fi
 
     return 0
@@ -228,5 +228,4 @@ CUR_IFB=nssifb
 # configure the WAN interface as a subinterface
 # just strip off the vlan tag here 
 IFACE=`echo ${IFACE} | sed 's/\.[0-9]*//g'`
-sqm_debug "Setting nssifb physical interface to ${IFACE}"
 
