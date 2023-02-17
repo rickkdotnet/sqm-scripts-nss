@@ -1,0 +1,4 @@
+Experimental HW-accelerated traffic shaping support for NSS-enabled platforms. 
+Needs the QCA nss-ifb kernel module to work correctly. 
+Only works with eth0/eth1 and the fq_codel queue discipline.
+Does not support ECN, classification and DSCP options at the moment. 

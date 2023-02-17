@@ -1,0 +1,225 @@
+################################################################################
+# nss.qos (HW Accelerated Simple Traffic Shaper)
+# version 20230214a
+#
+# sqm script to use the NSS accelerated nssfq_codel qdisc 
+#
+# Based on https://github.com/ricsc/sqm-scripts/blob/master/src/nss.qos 
+# and simple.qos. 
+# Modified by rickk to allow configuration via (l)uci and play nicely with
+# the standard sqm scripts without throwing all kinds of errors.
+# 
+# This script should be placed in your /usr/lib/sqm directory together with
+# nss.qos.help.
+# 
+# To use it, select fq_codel as a queue discipline in (l)uci and nss.qos 
+# for the script. 
+#
+# Works on my machine certified. 
+#
+################################################################################
+
+. ${SQM_LIB_DIR}/defaults.sh
+
+################################################################################
+
+ipt_setup() {
+
+    # unfortunately, mangle doesn't work well with NSS, nor are tc filters implemented
+    # so for now there's nothing to do here
+    sqm_debug "No iptables rules added"
+    return 1
+
+}
+
+cake_egress() {
+    sqm_error "The NSS shaper is currently only compatible with fq_codel. Not doing anything."
+    return 1
+}
+
+egress() {
+    # egress is pretty straightforward
+
+    # calculate burst using standard sqm function (seems to work well) 
+    BURST="$(get_burst ${MTU:-1514} ${UPLINK} ${ESHAPER_BURST_DUR_US})"
+    
+    # a lower codel quantum is rumoured to improve priority for interactive flows 
+    # at lower speed interfaces. 
+    if [ ${UPLINK} -lt 100000 ]; then
+	sqm_debug "Uplink speed is below 100Mb, setting codel quantum to 300"
+    	EQUANTUM=300
+    else
+        # use the interface mtu, this seems to work well in almost all cases
+        EQUANTUM=1514
+    fi
+
+    # this allows you to set the codel interval via (l)uci eqdisc_opts
+    # if no interval statement is present, set a sensible default
+    if [[ "${EQDISC_OPTS}" != *"interval"* ]]; then
+        sqm_debug "No interval specified via advanced option string, going with 100ms"
+	# 100ms works well in most cases, unless the link speed is so slow that target > interval
+	# but you probably don't want/need NSS in that case anyway
+        EQDISC_OPTS="interval 100ms ${EQDISC_OPTS}"
+    fi
+
+    # create the shaper 
+    $TC qdisc add dev $IFACE root handle 1: nsstbl rate ${UPLINK}kbit burst $BURST
+
+    # add the nssfq_codel qdisc 
+    $TC qdisc add dev $IFACE parent 1: handle 10: nssfq_codel `get_limit ${ELIMIT}` `get_flows ${EFLOWS}` `get_quantum ${EQUANTUM}` `get_target ${ETARGET} ${UPLINK}` ${EQDISC_OPTS} set_default
+
+    return 0 
+}
+
+
+cake_ingress() {
+    sqm_error "The NSS shaper is currently only compatible with fq_codel. Not doing anything."
+    return 1
+}
+
+ingress() {
+
+    if [[ ${IFACE} != *"eth"* ]]; then
+        sqm_error "The NSSifb driver only works with ethX interfaces. Not doing anything. "
+        return 1
+    fi
+
+    # for ingress, we need to create an ifb interface to create a virtual bottleneck where we can shape 
+    # the standard sqm-scripts assume this interface is called ifb4<physicalinterface> but the NSS driver
+    # creates an nssifb interface. 
+
+    printf ${IFACE} > /sys/module/nss_ifb/parameters/nss_dev_name
+
+    # calculate burst using standard sqm function (seems to work well)
+    BURST="$(get_burst ${MTU:-1514} ${DOWNLINK} ${ESHAPER_BURST_DUR_US})"
+    
+    # https://www.bufferbloat.net/projects/codel/wiki/Best_practices_for_benchmarking_Codel_and_FQ_Codel/#tuning-fq-codel
+    if [ ${DOWNLINK} -lt 100000 ]; then
+        sqm_debug "Downlink speed is below 100Mb, setting codel quantum to 300"
+        IQUANTUM=300
+    else
+        # use the interface mtu, this seems to work well in almost all cases
+        IQUANTUM=1514
+    fi
+
+    # this allows you to set the codel interval via (l)uci iqdisc_opts
+    # if no interval statement is present, set a sensible default
+    if [[ "${IQDISC_OPTS}" != *"interval"* ]]; then
+	sqm_debug "No interval specified via advanced option string, going with 100ms." 
+    	IQDISC_OPTS="interval 100ms ${IQDISC_OPTS}"
+    fi
+
+    sqm_debug "Creating the ingress shaper.."
+    $TC qdisc add dev $DEV root handle 1: nsstbl rate ${DOWNLINK}kbit burst ${BURST}
+    
+    sqm_debug "Adding the ingress qdisc.."
+    $TC qdisc add dev $DEV parent 1: handle 10: nssfq_codel `get_limit ${ILIMIT}` `get_flows ${IFLOWS}` `get_quantum ${IQUANTUM}` `get_target ${ITARGET} ${DOWNLINK}` ${IQDISC_OPTS} set_default
+
+    # I had a few crashes when I brought up the link immediately after
+    # not sure what the problem was but this seems to avoid it 
+    sqm_debug "Sleeping before enabling the $DEV interface... "
+    sleep 2
+
+    sqm_debug "Enabling the $DEV ifb interface.." 
+    $IP link set up $DEV
+
+    return 0 
+}
+
+# load modules and create nssifb interface if needed
+sqm_prepare_script() {
+
+    # sqm-scripts standard do_modules does not insert the necessary nss_ifb module
+    # load it here if it's not loaded, so we can keep all NSS changes together in this script
+    if [ ! -d /sys/module/nss_ifb ]; then
+	sqm_debug "required nss_ifb kernel module not detected, loading it now.. " 
+	insmod nss-ifb 2>>${OUTPUT_TARGET} || return 1 
+    fi	
+    
+    # the default sqm-stop script deletes the nssifb interface
+    if [ ! `SILENT=1 $IP link show dev nssifb` ]; then
+        sqm_debug "nssifb interface does not exist, trying to create a new one.. "
+    	$IP link add dev nssifb type nss_ifb || return 1 
+    fi
+
+    verify_iptables || return 1
+    ipt_setup
+
+    return 0 
+}
+
+# we override the stock sqm_start here, because this calls verify_qdisc which in turn
+# causes IFB interfaces being created (and destroyed) and this is a bit ugly. 
+# The logic is pretty much the same though. 
+sqm_start() {
+    sqm_debug "Starting sqm_start from nss.qos" 
+    [ -n "$IFACE" ] || return
+
+    # reset the iptables trace log
+    ipt_log_restart
+
+    sqm_prepare_script
+   
+    DEV="nssifb"
+
+    if [ "${UPLINK}" -ne 0 ];
+    then
+	CUR_DIRECTION="egress"
+	fn_exists egress && egress || sqm_warn "sqm_start_default: ${SCRIPT} lacks an egress() function"
+        sqm_debug "sqm_start: egress shaping activated"
+    else        
+	sqm_debug "sqm_start_default: egress shaping deactivated"
+        SILENT=1 $TC qdisc del dev ${IFACE} root
+    fi
+
+    if [ "${DOWNLINK}" -ne 0 ]; 
+    then
+	CUR_DIRECTION="ingress"
+	fn_exists ingress && ingress || sqm_warn "sqm_start_default: ${SCRIPT} lacks an ingress() function"
+        sqm_debug "sqm_start_default: ingress shaping activated"
+    else
+        sqm_debug "sqm_start_default: ingress shaping deactivated"
+        SILENT=1 $TC qdisc del dev ${DEV} root
+        SILENT=1 $TC qdisc del dev ${IFACE} ingress
+    fi
+
+    return 0
+}    
+
+# custom sqm_stop, because the standard function deletes the ifb which
+# causes nssifb to crash if the interface is recreated and enabled
+sqm_stop() {
+    if [ "${DOWNLINK}" -ne 0 ]; then
+       $TC qdisc del dev $IFACE ingress
+       $TC qdisc del dev $IFACE root
+       [ -n "$CUR_IFB" ] && $TC qdisc del dev $CUR_IFB root
+       [ -n "$CUR_IFB" ] && sqm_debug "${0}: ${CUR_IFB} shaper deleted"
+    fi
+
+    # undo accumulated ipt commands during shutdown
+    ipt_log_rewind
+    # reset the iptables trace log
+    ipt_log_restart
+
+# don't touch the ifb interface. While we we can recreate it, doing
+# so tends to crash the system, especially on boot, as sqm gets reloaded multiple times 
+# when it's triggered by ucitrack on /etc/firewall by various interfaces coming up
+# 
+# looks like bug in nss_ifb. if this gets fixed, the commands below can be enabled
+#
+#    [ -n "$CUR_IFB" ] && $IP link set dev ${CUR_IFB} down
+#    [ -n "$CUR_IFB" ] && $IP link delete ${CUR_IFB} type ifb
+#    [ -n "$CUR_IFB" ] && sqm_debug "${0}: ${CUR_IFB} interface deleted"
+
+    return 0
+}
+
+# this is needed here for sqm_stop to find and delete the correct ifb interface 
+CUR_IFB=nssifb
+
+# NSS only works on hardware interfaces, but some platforms (like R7800)
+# configure the WAN interface as a subinterface
+# just strip off the vlan tag here 
+IFACE=`echo ${IFACE} | sed 's/\.[0-9]*//g'`
+sqm_debug "Setting nssifb physical interface to ${IFACE}"
+
