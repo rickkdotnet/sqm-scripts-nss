@@ -13,18 +13,18 @@ Currently only supports nssfq-codel and no traffic classification / marking due 
 
 ## Installation
 
-### Package Installation
-
-* Download the .ipk package file here
-* Go to the System -> Software menu on your router and upload the .ipk package file
-
 ### Manual Installation
 
 * Just copy the nss-rk.qos and nss-rk.qos.help files to /usr/lib/sqm on your router
 
+### Package Installation
+
+* Download the .ipk package file from the [releases page](https://github.com/rickkdotnet/sqm-scripts-nss/releases/tag/ipk)
+* Go to the System -> Software menu on your router and upload the .ipk package file
+
 ### Installation via feeds
 
-If you're building OpenWRT yourselves, you can add this script to your build with a feed: 
+If you're building OpenWRT yourself, you can add this script to your build with a feed: 
 
     echo "src-git sqm_scripts_nss https://github.com/rickkdotnet/sqm-scripts-nss.git >> feeds.conf
     ./scripts/feeds update
