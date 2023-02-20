@@ -77,5 +77,5 @@ If it's working the output from tc should look something like this:
     * No marking or traffic classification is currently possible, this also means that DSCP squashing does not work
     * ECN marking is not supported
 * The script does not does anything with the Link Layer Adaptation fields. 
-* The script does not remove the nssifb interface if it's stopped, because removing or even bringing down the interface frequently crashed my router. This could cause problems if you're switching to a script which set up regular ifb4ethX interfaces. You probably need to reboot if you want to switch to another SQM script
+* On kernel 5.10 the script does not remove the nssifb interface if it's stopped, because removing or even bringing down the interface frequently crashed my router. This could cause problems if you're switching to a script which set up regular ifb4ethX interfaces. You probably need to reboot if you want to switch to another SQM script. On kernel 5.15 this problem has been resolved. 
 

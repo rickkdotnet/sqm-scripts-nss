@@ -1,6 +1,6 @@
 ################################################################################
 # nss-rk.qos (HW Accelerated Simple Traffic Shaper)
-# version 20230217c
+# version 20230220a
 #
 # sqm script to use the NSS accelerated nssfq_codel qdisc 
 #
@@ -23,6 +23,26 @@
 . ${SQM_LIB_DIR}/defaults.sh
 
 ################################################################################
+
+# this is needed here for sqm_stop to find and delete the correct ifb interface
+CUR_IFB=nssifb
+
+# NSS only works on hardware interfaces, but some platforms (like R7800)
+# configure the WAN interface as a subinterface
+# just strip off the vlan tag here
+IFACE=`echo ${IFACE} | sed 's/\.[0-9]*//g'`
+
+
+# Kernel 5.10 frequently crashes if the nssifb interface is deleted
+# but on kernel 5.15 the qdisc only works the first time it's attached.
+# On kernel 5.15 you need to delete interface before attaching a new qdisc
+
+KERNELVERSION=$(uname -r)
+if [[ "${KERNELVERSION}" != *"5.10"* ]]; then
+   DELETENSSIFB=1
+else
+   sqm_debug "Kernel version 5.10 found, will not delete nssifb on reload/stop"
+fi
 
 ipt_setup() {
 
@@ -87,13 +107,6 @@ ingress() {
     # the standard sqm-scripts assume this interface is called ifb4<physicalinterface> but the NSS driver
     # creates an nssifb interface. 
 
-    if [[ ${IFACE} != *"eth"* ]]; then
-        sqm_error "The NSSifb driver only works with ethX interfaces. Not doing anything. "
-        return 1
-    fi
-
-    printf ${IFACE} > /sys/module/nss_ifb/parameters/nss_dev_name
-
     # Codel target interval, when not set use a reasonable default
     [ -z "$ITARGET" ] && ITARGET="5ms"
 
@@ -137,6 +150,13 @@ sqm_prepare_script() {
       sqm_debug "required nss_ifb kernel module not detected, loading it now.. " 
 	    insmod nss-ifb 2>>${OUTPUT_TARGET} || return 1 
     fi	
+
+    if [[ ${IFACE} != *"eth"* ]]; then
+        sqm_error "The NSSifb driver only works with ethX interfaces. Not doing anything. "
+        return 1
+    fi
+
+    printf ${IFACE} > /sys/module/nss_ifb/parameters/nss_dev_name
     
     # the default sqm-stop script deletes the nssifb interface
     if [ ! `SILENT=1 $IP link show dev nssifb` ]; then
@@ -167,10 +187,10 @@ sqm_start() {
     if [ "${UPLINK}" -ne 0 ];
     then
       CUR_DIRECTION="egress"
-	    fn_exists egress && egress || sqm_warn "sqm_start_default: ${SCRIPT} lacks an egress() function"
+      fn_exists egress && egress || sqm_warn "sqm_start_default: ${SCRIPT} lacks an egress() function"
       sqm_debug "sqm_start: egress shaping activated"
     else        
-	    sqm_debug "sqm_start_default: egress shaping deactivated"
+      sqm_debug "sqm_start_default: egress shaping deactivated"
       SILENT=1 $TC qdisc del dev ${IFACE} root
     fi
 
@@ -203,24 +223,18 @@ sqm_stop() {
     # reset the iptables trace log
     ipt_log_restart
 
-# don't touch the ifb interface. While we we can recreate it, doing
-# so tends to crash the system, especially on boot, as sqm gets reloaded multiple times 
-# when it's triggered by ucitrack on /etc/firewall by various interfaces coming up
-# 
-# looks like bug in nss_ifb. if this gets fixed, the commands below can be enabled
-#
-#    [ -n "$CUR_IFB" ] && $IP link set dev ${CUR_IFB} down
-#    [ -n "$CUR_IFB" ] && $IP link delete ${CUR_IFB} type ifb
-#    [ -n "$CUR_IFB" ] && sqm_debug "${0}: ${CUR_IFB} interface deleted"
+
+    if [ -n $DELETENSSIFB ]; then
+        [ -n "$CUR_IFB" ] && $IP link set dev ${CUR_IFB} down
+        [ -n "$CUR_IFB" ] && $IP link delete ${CUR_IFB} type ifb
+        [ -n "$CUR_IFB" ] && sqm_debug "${0}: ${CUR_IFB} interface deleted"
+    else 
+        # workaround a bug in nssifb on kernel 5.10
+        sqm_debug "${0}: Not deleting $CUR_IFB because variable DELETENSSIFB is not set"
+    fi
 
     return 0
 }
 
-# this is needed here for sqm_stop to find and delete the correct ifb interface 
-CUR_IFB=nssifb
 
-# NSS only works on hardware interfaces, but some platforms (like R7800)
-# configure the WAN interface as a subinterface
-# just strip off the vlan tag here 
-IFACE=`echo ${IFACE} | sed 's/\.[0-9]*//g'`
 
