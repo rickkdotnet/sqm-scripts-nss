@@ -1,6 +1,6 @@
 ################################################################################
 # nss-rk.qos (HW Accelerated Simple Traffic Shaper)
-# version 20230220a
+# version 20230227a
 #
 # sqm script to use the NSS accelerated nssfq_codel qdisc 
 #
@@ -31,7 +31,6 @@ CUR_IFB=nssifb
 # configure the WAN interface as a subinterface
 # just strip off the vlan tag here
 IFACE=`echo ${IFACE} | sed 's/\.[0-9]*//g'`
-
 
 # Kernel 5.10 frequently crashes if the nssifb interface is deleted
 # but on kernel 5.15 the qdisc only works the first time it's attached.
@@ -65,8 +64,8 @@ egress() {
     # Codel target interval, when not set use a reasonable default
     [ -z "$ETARGET" ] && ETARGET="5ms"
 
-    # calculate burst using standard sqm function (seems to work well) 
-    BURST="$(get_burst ${MTU:-1514} ${UPLINK} ${ESHAPER_BURST_DUR_US})"
+    # burst only makes codel react slower, so use the minimum 
+    BURST=${MTU:-1514}
     
     # a lower codel quantum is rumoured to improve priority for interactive flows 
     # at lower speed interfaces. 
@@ -110,8 +109,8 @@ ingress() {
     # Codel target interval, when not set use a reasonable default
     [ -z "$ITARGET" ] && ITARGET="5ms"
 
-    # calculate burst using standard sqm function (seems to work well)
-    BURST="$(get_burst ${MTU:-1514} ${DOWNLINK} ${ESHAPER_BURST_DUR_US})"
+    # burst only makes codel react slower, so use the minimum
+    BURST=${MTU:-1514}
     
     # https://www.bufferbloat.net/projects/codel/wiki/Best_practices_for_benchmarking_Codel_and_FQ_Codel/#tuning-fq-codel
     if [ ${DOWNLINK} -lt 100000 ]; then
