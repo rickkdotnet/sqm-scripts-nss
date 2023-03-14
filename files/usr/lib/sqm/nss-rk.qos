@@ -1,6 +1,6 @@
 ################################################################################
 # nss-rk.qos (HW Accelerated Simple Traffic Shaper)
-# version 20230227a
+# version 20230313a
 #
 # sqm script to use the NSS accelerated nssfq_codel qdisc 
 #
@@ -31,6 +31,11 @@ CUR_IFB=nssifb
 # configure the WAN interface as a subinterface
 # just strip off the vlan tag here
 IFACE=`echo ${IFACE} | sed 's/\.[0-9]*//g'`
+
+# Override the STATEFILE with the 'new' interface name from above. 
+# Otherwise we'll run into trouble when stopping sqm, because the statefile 
+# could be written to a filename with the subinterface 
+STATE_FILE="${SQM_STATE_DIR}/${IFACE}.state"
 
 # Kernel 5.10 frequently crashes if the nssifb interface is deleted
 # but on kernel 5.15 the qdisc only works the first time it's attached.
@@ -134,6 +139,7 @@ ingress() {
     sqm_debug "Adding the ingress qdisc.."
     $TC qdisc add dev $DEV parent 1: handle 10: nssfq_codel `get_limit ${ILIMIT}` `get_flows ${IFLOWS}` `get_quantum ${IQUANTUM}` `get_target ${ITARGET} ${DOWNLINK}` ${IQDISC_OPTS} set_default
 
+    # The system likes to crash at this point...
     sqm_debug "Enabling the $DEV ifb interface.." 
     $IP link set up $DEV
 
@@ -158,8 +164,10 @@ sqm_prepare_script() {
     printf ${IFACE} > /sys/module/nss_ifb/parameters/nss_dev_name
     
     # the default sqm-stop script deletes the nssifb interface
-    if [ ! `SILENT=1 $IP link show dev nssifb` ]; then
+    if [ ! -d /sys/devices/virtual/net/nssifb ]; then
       sqm_debug "nssifb interface does not exist, trying to create a new one.. "
+
+      # add the interface
       $IP link add dev nssifb type nss_ifb || return 1 
     fi
 
@@ -222,7 +230,6 @@ sqm_stop() {
     # reset the iptables trace log
     ipt_log_restart
 
-
     if [ -n $DELETENSSIFB ]; then
         [ -n "$CUR_IFB" ] && $IP link set dev ${CUR_IFB} down
         [ -n "$CUR_IFB" ] && $IP link delete ${CUR_IFB} type ifb
@@ -231,6 +238,10 @@ sqm_stop() {
         # workaround a bug in nssifb on kernel 5.10
         sqm_debug "${0}: Not deleting $CUR_IFB because variable DELETENSSIFB is not set"
     fi
+
+    # Under high load and reloading SQM nssifb tends to crash 
+    # sleep a little, hopefully this helps
+    sleep 2
 
     return 0
 }
