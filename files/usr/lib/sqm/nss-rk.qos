@@ -1,20 +1,20 @@
 ################################################################################
 # nss-rk.qos (HW Accelerated Simple Traffic Shaper)
-# version 20230313a
+# version 20230314a
 #
 # sqm script to use the NSS accelerated nssfq_codel qdisc 
 #
 # Based on simple.qos and nss.qos by ricsc.
 # Modified by rickk to allow configuration via (l)uci and play nicely with
 # the standard sqm scripts without throwing all kinds of errors.
-# 
+#
 # This script should be placed in your /usr/lib/sqm directory together with
 # nss-rk.qos.help.
 # 
 # To use it, select fq_codel as a queue discipline in (l)uci and nss.qos 
 # for the script. 
 #
-# Works on my machine (R7800 with OpenWRT 22.03.3) certified. 
+# Works on my machine (R7800 with OpenWRT master kernel 5.15) certified. 
 #
 # Original can be found at https://github.com/rickkdotnet/sqm-scripts-nss
 #
@@ -23,6 +23,20 @@
 . ${SQM_LIB_DIR}/defaults.sh
 
 ################################################################################
+
+# BAILOUT WHEN CALLED FROM HOTPLUG
+# 
+# Restarting SQM from hotplug tends to crash the router on boot, probably because it quickly brings up, down and up again 
+# the nssifb interface (it crashes on the last ip link up). Even worse when you have alias interfaces. Workaround that problem here. 
+#
+# /etc/hotplug.d/iface/11-sqm reloads SQM whenever an interface (i.e: wan) associated with the device (i.e.: eth0) 
+# changes state. This might be useful for dynamic interfaces, but with NSS you're always using a hardware interface 
+# and it's no problem if the NSS SQM config remains in place during ifup/downs. 
+
+if [ ! -z ${ACTION} ] && [ ! -z ${INTERFACE} ] && [ ! -z ${DEVICE} ]; then 
+  sqm_warn "By the looks of the ENV vars it looks like hotplug has triggered us. This is not necessary, quitting script to prevent crashes." 
+  exit 0
+fi 
 
 # this is needed here for sqm_stop to find and delete the correct ifb interface
 CUR_IFB=nssifb
@@ -47,6 +61,7 @@ if [[ "${KERNELVERSION}" != *"5.10"* ]]; then
 else
    sqm_debug "Kernel version 5.10 found, will not delete nssifb on reload/stop"
 fi
+
 
 ipt_setup() {
 
@@ -78,8 +93,8 @@ egress() {
     sqm_debug "Uplink speed is below 100Mb, setting codel quantum to 300"
     	EQUANTUM=300
     else
-        # use the interface mtu, this seems to work well in almost all cases
-        EQUANTUM=1514
+      # use the interface mtu, this seems to work well in almost all cases
+      EQUANTUM=1514
     fi
 
     # this allows you to set the codel interval via (l)uci eqdisc_opts
@@ -161,6 +176,7 @@ sqm_prepare_script() {
         return 1
     fi
 
+    # nssifb does not like me doing this 
     printf ${IFACE} > /sys/module/nss_ifb/parameters/nss_dev_name
     
     # the default sqm-stop script deletes the nssifb interface
@@ -218,6 +234,7 @@ sqm_start() {
 # custom sqm_stop, because the standard function deletes the ifb which
 # causes nssifb to crash if the interface is recreated and enabled
 sqm_stop() {
+
     if [ "${DOWNLINK}" -ne 0 ]; then
        $TC qdisc del dev $IFACE ingress
        $TC qdisc del dev $IFACE root
@@ -239,9 +256,9 @@ sqm_stop() {
         sqm_debug "${0}: Not deleting $CUR_IFB because variable DELETENSSIFB is not set"
     fi
 
-    # Under high load and reloading SQM nssifb tends to crash 
-    # sleep a little, hopefully this helps
-    sleep 2
+    # sleep a little, hopefully this prevents the system from crashing on restart of sqm  
+    sqm_debug "Sleeping for a second.. " 
+    sleep 1
 
     return 0
 }
