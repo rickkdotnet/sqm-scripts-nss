@@ -1,6 +1,6 @@
-################################################################################
+###############################################################################
 # nss-rk.qos (HW Accelerated Simple Traffic Shaper)
-# version 20230314a
+# version 20230320a
 #
 # sqm script to use the NSS accelerated nssfq_codel qdisc 
 #
@@ -32,11 +32,29 @@
 # /etc/hotplug.d/iface/11-sqm reloads SQM whenever an interface (i.e: wan) associated with the device (i.e.: eth0) 
 # changes state. This might be useful for dynamic interfaces, but with NSS you're always using a hardware interface 
 # and it's no problem if the NSS SQM config remains in place during ifup/downs. 
+#
+# However, sometimes the interface is not up when /etc/init.d/sqm runs and then you do need hotplug to bring SQM up
+# the following tries to achieve this. 
 
 if [ ! -z ${ACTION} ] && [ ! -z ${INTERFACE} ] && [ ! -z ${DEVICE} ]; then 
-  sqm_warn "By the looks of the ENV vars it looks like hotplug has triggered us. This is not necessary, quitting script to prevent crashes." 
-  exit 0
+  sqm_debug "${SCRIPT}: triggered by hotplug ${ACTION} for ${INTERFACE} (${DEVICE})"
+  if $TC qdisc show dev nssifb
+  then
+    sqm_log "${SCRIPT}: TC qdisc is already installed on nssifb, not restarting to minimize the risk of crashes" 
+    exit 0
+  else
+    sqm_debug "${SCRIPT}: No qdisc detected on nssifb, continuing with script"
+  fi
 fi 
+
+# the maximum (worst case) length of the fq_codel queue in milliseconds
+# this is used together with speed and mtu to calculate the fq_codel queue limit
+# when the limit is not specified by the user in the SQM configuration 
+# 
+# If the queue limit of the nssifb is hit (observable by looking at drop_overlimit in tc -s qdisc show dev nssifb) 
+# I see bloat for the first few seconds of a load test until codel takes over and things stabilize.
+# That's why I like to keep it on the high side to ensure codel sees all traffic right away. The only real tradeoff is memory anyway. 
+MAXQLIMIT_MS=100
 
 # this is needed here for sqm_stop to find and delete the correct ifb interface
 CUR_IFB=nssifb
@@ -63,6 +81,23 @@ else
 fi
 
 
+calc_limit() {
+  [ -z ${MINLIMIT} ] && MINLIMIT=200
+  local LIMIT 
+ 
+  # queue-limit = (bandwidth / 8 bits) * delay / MTU 
+  LIMIT=$( awk -v SPEED=$1 -v MTU=$2 -v MAXDELAY=$3 'BEGIN {print(int((SPEED*125)*(MAXDELAY/1000)/MTU))}' ) 
+  sqm_debug "calc_limit: Queue limit should be $LIMIT packets for speed $1, MTU $2 and maximum delay $3 ms" 
+
+  if [ ${LIMIT} -lt ${MINLIMIT} ]; then
+    LIMIT=${MINLIMIT}
+    sqm_debug "calc_limit: calculated limit is lower than ${MINLIMIT}, this is too little for codel to work with. Raising to ${MINLIMIT}." 
+  fi
+ 
+  echo $LIMIT 
+
+}
+
 ipt_setup() {
 
     # unfortunately, mangle doesn't work well with NSS, nor are tc filters implemented
@@ -78,110 +113,185 @@ cake_egress() {
     return 1
 }
 
-egress() {
-    # egress is pretty straightforward, no need for ifb interface
-
-    # Codel target interval, when not set use a reasonable default
-    [ -z "$ETARGET" ] && ETARGET="5ms"
-
-    # burst only makes codel react slower, so use the minimum 
-    BURST=${MTU:-1514}
-    
-    # a lower codel quantum is rumoured to improve priority for interactive flows 
-    # at lower speed interfaces. 
-    if [ ${UPLINK} -lt 100000 ]; then
-    sqm_debug "Uplink speed is below 100Mb, setting codel quantum to 300"
-    	EQUANTUM=300
-    else
-      # use the interface mtu, this seems to work well in almost all cases
-      EQUANTUM=1514
-    fi
-
-    # this allows you to set the codel interval via (l)uci eqdisc_opts
-    # if no interval statement is present, set a sensible default
-    if [[ "${EQDISC_OPTS}" != *"interval"* ]]; then
-        sqm_debug "No interval specified via advanced option string, going with 100ms"     # 100ms works well in most cases, unless the link speed is so slow that target > interval
-	  # but you probably don't want/need NSS in that case anyway
-        EQDISC_OPTS="interval 100ms ${EQDISC_OPTS}"
-    fi
-
-    # create the shaper 
-    $TC qdisc add dev $IFACE root handle 1: nsstbl rate ${UPLINK}kbit burst $BURST
-
-    # add the nssfq_codel qdisc 
-    $TC qdisc add dev $IFACE parent 1: handle 10: nssfq_codel `get_limit ${ELIMIT}` `get_flows ${EFLOWS}` `get_quantum ${EQUANTUM}` `get_target ${ETARGET} ${UPLINK}` ${EQDISC_OPTS} set_default
-
-    return 0 
-}
-
-
 cake_ingress() {
     sqm_error "The NSS shaper is currently only compatible with fq_codel. Not doing anything."
     return 1
 }
 
+# Sets up the NSS TBL (token bucket limiter) shaper
+add_nsstbl() {
+  local IF=$1
+  local SPEED=$2 
+  local BURST_US=$3
+  local MTU=$4
+  local LOGT="add_nsstbl $IF:"
+
+  sqm_debug "$LOGT interface:$IF speed:$SPEED burst:$BURST_US mtu:$MTU overhead:$OVERHEAD"
+
+  # BURST
+  # 
+  # burst is a tradeoff between cpu load and strictness of the shaper
+  # effects are pretty minimal either way with NSS, the SQM scripts default of 1000us
+  # seems to be a good sweet spot and counter-intuitively appears a bit more stable
+  # in both throughput and latency than a minimimal burst 
+ 
+  BURST=`get_burst ${MTU} ${SPEED} ${BURST_US}`
+
+  # round to nearest multiple of MTU. 
+  BURST=`echo ${BURST} | awk -v MTU=$MTU '{print sprintf("%.0f",$0/MTU)*MTU}'`
+
+  # Add the qdisc 
+  $TC qdisc add dev $IF root handle 1: nsstbl rate ${SPEED}kbit burst ${BURST} mtu ${MTU}b || return 1
+
+  return 0 
+}
+
+# Sets up the NSS fq_codel qdisc
+add_nssfq_codel() {
+  local IF=$1 
+  local SPEED=$2 
+  local TARGET=$3
+  local LIMIT=$4
+  local MTU=$5
+  local QDISC_OPTS=$6
+  local LOGT="add_nssfq_codel $IF:"
+  
+  sqm_debug "$LOGT interface:$IF speed:$SPEED target:$TARGET limit:$LIMIT mtu:$MTU overhead:$OVERHEAD opts:$QDISC_OPTS"    
+
+  # INTERVAL
+  #
+  # this allows you to set the codel interval via (l)uci eqdisc_opts
+  # You should set this to the average "worst case" latency towards your services  
+  # if no interval statement is present, set a sensible default
+  if [[ "${QDISC_OPTS}" != *"interval"* ]]; then
+    sqm_debug "$LOGT No interval specified via advanced option string, going with 100ms"     
+
+    # 100ms works well in most cases, unless the link speed is so slow that target > interval
+    # but you probably don't want/need NSS in that case anyway, so I don't bother. 
+    QDISC_OPTS="interval 100ms ${QDISC_OPTS}"
+  fi 
+
+
+  # QUANTUM 
+  #
+  # Quantum defines how much bytes may be dequeued at once. At MTU, all packets have equal weight
+  # but lower quantums give smaller packets more weight. I.e. with a quantum of 300, a <300 byte 
+  # packet is 5 times likelier to be dequeued than a 1500 byte packet. 
+  # At high rates this doesn't make much difference but at low speeds it does 
+
+  if [[ "${QDISC_OPTS}" != *"quantum"* ]]; then
+
+    # use the interface mtu, this seems to work well in almost all cases
+    # add 14 bytes for the ethernet header and 4 bytes for NSS
+    let QUANTUM=MTU
+
+    sqm_debug "$LOGT No quantum specified via advanced option string, setting default to $QUANTUM based on an MTU of $MTU"
+    
+    # at speeds <100Mb, a quantum of ~300 helps prioritize small packets
+    # https://www.bufferbloat.net/projects/codel/wiki/Best_practices_for_benchmarking_Codel_and_FQ_Codel/
+    if [ ${SPEED} -lt 100000 ]; then
+      let QUANTUM/=5
+      let QUANTUM+=1 
+      sqm_debug "Interface speed is less than 100 Mb/s, lowering Codel quantum to $QUANTUM" 
+    fi
+
+    QDISC_OPTS="`get_quantum ${QUANTUM}` ${QDISC_OPTS}"  
+  fi
+
+  # FLOWS
+  # 
+  # The number of flows into which packets are classified
+  # required argument for nssfq_codel
+  if [[ "${QDISC_OPTS}" != *"flows"* ]]; then
+    QDISC_OPTS="flows 1024 ${QDISC_OPTS}"
+  fi
+
+  # Add the qdisc to the interface
+  $TC qdisc add dev $IF parent 1: handle 10: nssfq_codel `get_limit $LIMIT` `get_target ${TARGET} ${SPEED}` ${QDISC_OPTS} set_default || return 1
+ 
+  return 0 
+}
+
+
+egress() {
+
+  # Codel target interval, when not set use a reasonable default
+  [ -z "$ETARGET" ] && ETARGET="5ms"
+
+  # MTU 
+  #
+  local MTU=$( get_mtu ${IFACE} )
+
+  # if we leave this empty the qdisc uses a default of 1514. However, when you enable NSS
+  # maxpacket in tc -s qdisc will show that 1518b packets are hitting the shaper, which is probably due to a header
+  # added by NSS. Not sure what is correct, but it's probably better to err on the large side
+  # If you don't like this, just set the overhead in the SQM config to 0 or 14. 
+  [ "${OVERHEAD}" -eq 0 ] && OVERHEAD=18
+
+  let MTU+=OVERHEAD
+
+  # If there's no queue limit configured, calculate one
+  [ -z "$ELIMIT" ] && ELIMIT=$(calc_limit ${UPLINK} ${MTU} ${MAXQLIMIT_MS})
+
+  # add the shaper to the interface
+  add_nsstbl ${IFACE} ${UPLINK} ${ESHAPER_BURST_DUR_US} ${MTU} || (sqm_error "egress: failed to add shaper" && return 1)
+
+  # add the qdisc to the interface
+  add_nssfq_codel ${IFACE} ${UPLINK} ${ETARGET} ${ELIMIT} ${MTU} "${EQDISC_OPTS}" || (sqm_error "egress: failed to add qdisc" && return 1)
+
+  return 0
+}
+
 ingress() {
 
-    # for ingress, we need to create an ifb interface to create a virtual bottleneck where we can shape 
-    # the standard sqm-scripts assume this interface is called ifb4<physicalinterface> but the NSS driver
-    # creates an nssifb interface. 
+  # Codel target interval, when not set use a reasonable default
+  [ -z "$ITARGET" ] && ITARGET="5ms"
 
-    # Codel target interval, when not set use a reasonable default
-    [ -z "$ITARGET" ] && ITARGET="5ms"
+  # MTU, see egress for more info
+  local MTU=$( get_mtu $DEV )
+  [ "${OVERHEAD}" -eq 0 ] && OVERHEAD=18
+  let MTU+=OVERHEAD
 
-    # burst only makes codel react slower, so use the minimum
-    BURST=${MTU:-1514}
-    
-    # https://www.bufferbloat.net/projects/codel/wiki/Best_practices_for_benchmarking_Codel_and_FQ_Codel/#tuning-fq-codel
-    if [ ${DOWNLINK} -lt 100000 ]; then
-        sqm_debug "Downlink speed is below 100Mb, setting codel quantum to 300"
-        IQUANTUM=300
-    else
-        # use the interface mtu, this seems to work well in almost all cases
-        IQUANTUM=1514
-    fi
+  # If there's no queue limit configured, calculate one
+  [ -z "$ILIMIT" ] && ILIMIT=$(calc_limit ${DOWNLINK} ${MTU} ${MAXQLIMIT_MS})
 
-    # this allows you to set the codel interval via (l)uci iqdisc_opts
-    # if no interval statement is present, set a sensible default
-    if [[ "${IQDISC_OPTS}" != *"interval"* ]]; then
-    sqm_debug "No interval specified via advanced option string, going with 100ms." 
-    	IQDISC_OPTS="interval 100ms ${IQDISC_OPTS}"
-    fi
+  # add the shaper to the interface
+  add_nsstbl ${DEV} ${DOWNLINK} ${ISHAPER_BURST_DUR_US} ${MTU} || (sqm_error "ingress: failed to add shaper" && return 1)
 
-    sqm_debug "Creating the ingress shaper.."
-    $TC qdisc add dev $DEV root handle 1: nsstbl rate ${DOWNLINK}kbit burst ${BURST}
-    
-    sqm_debug "Adding the ingress qdisc.."
-    $TC qdisc add dev $DEV parent 1: handle 10: nssfq_codel `get_limit ${ILIMIT}` `get_flows ${IFLOWS}` `get_quantum ${IQUANTUM}` `get_target ${ITARGET} ${DOWNLINK}` ${IQDISC_OPTS} set_default
+  # add the qdisc to the interface
+  add_nssfq_codel ${DEV} ${DOWNLINK} ${ITARGET} ${ILIMIT} ${MTU} "${IQDISC_OPTS}" || (sqm_error "ingress: failed to add shaper" && return 1)
 
-    # The system likes to crash at this point...
-    sqm_debug "Enabling the $DEV ifb interface.." 
-    $IP link set up $DEV
+  # The system likes to crash at this point, especially at high load. 
+  # sleep a little, hopefully this prevents the system from crashing on restart of sqm
+  sqm_debug "sqm_stop: Sleeping for a second.. "
+  sleep 1
 
-    return 0 
+  sqm_debug "ingress: Enabling the $DEV ifb interface.." || (sqm_error "ingress: failed to enable $DEV interface" && return 1)
+  $IP link set up $DEV || return 1
+
+   return 0 
 }
 
 # load modules and create nssifb interface if needed
 sqm_prepare_script() {
-
-    # sqm-scripts standard do_modules does not insert the necessary nss_ifb module
+# sqm-scripts standard do_modules does not insert the necessary nss_ifb module
     # load it here if it's not loaded, so we can keep all NSS changes together in this script
     if [ ! -d /sys/module/nss_ifb ]; then
-      sqm_debug "required nss_ifb kernel module not detected, loading it now.. " 
-	    insmod nss-ifb 2>>${OUTPUT_TARGET} || return 1 
+      sqm_log "sqm_prepare_script: required nss_ifb kernel module not detected, loading it now.. " 
+	    insmod nss-ifb 2>>${OUTPUT_TARGET} || (sqm_error "Kernel module failed to load" && return 1) 
     fi	
 
     if [[ ${IFACE} != *"eth"* ]]; then
-        sqm_error "The NSSifb driver only works with ethX interfaces. Not doing anything. "
+        sqm_error "sqm_prepare_script: The NSSifb driver only works with ethX interfaces. Not doing anything. "
         return 1
     fi
 
-    # nssifb does not like me doing this 
+    # This in theory allows you to change the device the ifb is active on. Not tested. 
     printf ${IFACE} > /sys/module/nss_ifb/parameters/nss_dev_name
     
     # the default sqm-stop script deletes the nssifb interface
     if [ ! -d /sys/devices/virtual/net/nssifb ]; then
-      sqm_debug "nssifb interface does not exist, trying to create a new one.. "
+      sqm_log "sqm_prepare_script: nssifb interface does not exist, trying to create a new one.. "
 
       # add the interface
       $IP link add dev nssifb type nss_ifb || return 1 
@@ -197,7 +307,7 @@ sqm_prepare_script() {
 # causes IFB interfaces being created (and destroyed) and this is a bit ugly. 
 # The logic is pretty much the same though. 
 sqm_start() {
-    sqm_debug "Starting sqm_start from nss.qos" 
+    sqm_debug "sqm_start: Starting sqm_start from nss.qos" 
     [ -n "$IFACE" ] || return
 
     # reset the iptables trace log
@@ -210,22 +320,29 @@ sqm_start() {
     if [ "${UPLINK}" -ne 0 ];
     then
       CUR_DIRECTION="egress"
-      fn_exists egress && egress || sqm_warn "sqm_start_default: ${SCRIPT} lacks an egress() function"
-      sqm_debug "sqm_start: egress shaping activated"
+      if fn_exists egress && egress; 
+      then 
+        sqm_log "sqm_start: egress shaping activated"
+      else 
+        sqm_warn "sqm_start: ${SCRIPT} lacks egress() function or exited with an error"
+      fi
     else        
-      sqm_debug "sqm_start_default: egress shaping deactivated"
       SILENT=1 $TC qdisc del dev ${IFACE} root
+      sqm_log "sqm_start: egress shaping deactivated"
     fi
 
     if [ "${DOWNLINK}" -ne 0 ]; 
     then
       CUR_DIRECTION="ingress"
-      fn_exists ingress && ingress || sqm_warn "sqm_start_default: ${SCRIPT} lacks an ingress() function"
-      sqm_debug "sqm_start_default: ingress shaping activated"
+      if fn_exists ingress && ingress;
+      then
+        sqm_log "sqm_start: ingress shaping activated"
+      else
+        sqm_warn "sqm_start: ${SCRIPT} lacks ingress() function or exited with an error"
+      fi
     else
-      sqm_debug "sqm_start_default: ingress shaping deactivated"
       SILENT=1 $TC qdisc del dev ${DEV} root
-      SILENT=1 $TC qdisc del dev ${IFACE} ingress
+      sqm_log "sqm_start: ingress shaping deactivated"
     fi
 
     return 0
@@ -236,7 +353,6 @@ sqm_start() {
 sqm_stop() {
 
     if [ "${DOWNLINK}" -ne 0 ]; then
-       $TC qdisc del dev $IFACE ingress
        $TC qdisc del dev $IFACE root
        [ -n "$CUR_IFB" ] && $TC qdisc del dev $CUR_IFB root
        [ -n "$CUR_IFB" ] && sqm_debug "${0}: ${CUR_IFB} shaper deleted"
@@ -255,10 +371,6 @@ sqm_stop() {
         # workaround a bug in nssifb on kernel 5.10
         sqm_debug "${0}: Not deleting $CUR_IFB because variable DELETENSSIFB is not set"
     fi
-
-    # sleep a little, hopefully this prevents the system from crashing on restart of sqm  
-    sqm_debug "Sleeping for a second.. " 
-    sleep 1
 
     return 0
 }

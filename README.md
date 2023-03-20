@@ -67,8 +67,6 @@ If it's working the output from tc should look something like this:
      maxpacket 1518 drop_overlimit 0 new_flow_count 5081 ecn_mark 0
      new_flows_len 0 old_flows_len 1
 
-
-
 ## Known bugs, limitations
 
 
@@ -77,8 +75,8 @@ If it's working the output from tc should look something like this:
     * No marking or traffic classification is currently possible, this also means that DSCP squashing does not work
     * ECN marking is not supported
 * The script does not does anything with the Link Layer Adaptation fields. 
-* On kernel 5.10 the script does not remove the nssifb interface if it's stopped, because removing or even bringing down the interface frequently crashed my router. This could cause problems if you're switching to a script which set up regular ifb4ethX interfaces. You probably need to reboot if you want to switch to another SQM script. On kernel 5.15 this problem has been resolved. 
-* In some cases, the router crashes on ip link up of nssifb, *especially* when called from hotplug. Because of this, there's workaround in the script that prevents the script from executing when it's called from hotplug.  
+* On kernel 5.10 the script does not remove the nssifb interface if it's stopped, because removing or even bringing down the interface frequently crashed my router. This could cause problems if you're switching to a script which set up regular ifb4ethX interfaces. You probably need to reboot if you want to switch to another SQM script. 
+# On kernel 5.15 the above problem has been resolved, but in some cases (I think under high load), the router crashes on ip link up of nssifb, *especially* when called from hotplug. Because of this, there's workaround in the script that prevents the script from executing when it's called from hotplug.  
 
 
 
